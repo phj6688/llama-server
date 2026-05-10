@@ -1,0 +1,48 @@
+networks:
+  platform-net:
+    external: true
+
+services:
+  llama-server:
+    build:
+      context: .
+      args:
+        LLAMA_CPP_TAG: ${LLAMA_CPP_TAG:-server-rocm-b9070}
+    image: llama-server:latest
+    container_name: llama-server
+    restart: unless-stopped
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - "110"
+    security_opt:
+      - seccomp:unconfined
+    mem_limit: ${LLAMA_MEM_LIMIT:-18g}
+    cpus: "16"
+    environment:
+      LLAMA_MODEL_PATH: ${LLAMA_MODEL_PATH}
+      LLAMA_MODEL_ALIAS: ${LLAMA_MODEL_ALIAS:-default}
+      LLAMA_CONTEXT: ${LLAMA_CONTEXT:-8192}
+      LLAMA_GPU_LAYERS: ${LLAMA_GPU_LAYERS:-999}
+      LLAMA_KV_TYPE_K: ${LLAMA_KV_TYPE_K:-q8_0}
+      LLAMA_KV_TYPE_V: ${LLAMA_KV_TYPE_V:-q8_0}
+      LLAMA_MIN_FREE_GB: ${LLAMA_MIN_FREE_GB:-4}
+      LLAMA_MAX_SWAP_GB: ${LLAMA_MAX_SWAP_GB:-10}
+      HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-11.0.0}
+    volumes:
+      - ${LLAMA_MODELS_DIR:-./models}:/models:ro
+    networks:
+      - platform-net
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
