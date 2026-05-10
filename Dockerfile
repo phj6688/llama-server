@@ -16,6 +16,7 @@ RUN getent group render >/dev/null || groupadd -g 110 render \
  && usermod -aG render,video ubuntu
 
 COPY entrypoint.sh /app/entrypoint.sh
+COPY templates/ /app/templates/
 RUN chmod +x /app/entrypoint.sh
 
 USER ubuntu

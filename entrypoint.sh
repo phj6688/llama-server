@@ -32,6 +32,7 @@ KV_V="${LLAMA_KV_TYPE_V:-q8_0}"
 ALIAS="${LLAMA_MODEL_ALIAS:-default}"
 HOST="${LLAMA_HOST:-0.0.0.0}"
 PORT="${LLAMA_PORT:-8000}"
+CHAT_TEMPLATE_FILE="${LLAMA_CHAT_TEMPLATE_FILE:-}"
 
 if [[ ! -f "$MODEL_PATH" ]]; then
   echo "FATAL: model file not found at LLAMA_MODEL_PATH=$MODEL_PATH" >&2
@@ -40,6 +41,12 @@ fi
 
 echo "boot guard ok: free=${free_gb}G swap_used=${swap_used_gb}G; loading $MODEL_PATH ctx=$CTX kv=$KV_K/$KV_V"
 
+EXTRA_ARGS=()
+if [[ -n "$CHAT_TEMPLATE_FILE" && -f "$CHAT_TEMPLATE_FILE" ]]; then
+  EXTRA_ARGS+=(--jinja --chat-template-file "$CHAT_TEMPLATE_FILE")
+  echo "tool calling enabled via $CHAT_TEMPLATE_FILE"
+fi
+
 exec /app/llama-server \
   -m "$MODEL_PATH" \
   --ctx-size "$CTX" \
@@ -47,4 +54,5 @@ exec /app/llama-server \
   --cache-type-k "$KV_K" --cache-type-v "$KV_V" \
   --alias "$ALIAS" \
   --host "$HOST" --port "$PORT" \
-  --no-webui
+  --no-webui \
+  "${EXTRA_ARGS[@]}"

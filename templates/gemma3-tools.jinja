@@ -1,0 +1,106 @@
+{#- Begin-of-sequence token -#}
+{{ bos_token }}
+
+{#- Extract system message if present -#}
+{%- set system_message = "" -%}
+{%- set start_index = 0 -%}
+{%- if messages[0]['role'] == 'system' -%}
+    {%- if messages[0]['content'] is string -%}
+        {%- set system_message = messages[0]['content'] + '\n\n' -%}
+    {%- else -%}
+        {%- set system_message = messages[0]['content'][0]['text'] + '\n\n' -%}
+    {%- endif -%}
+    {%- set start_index = 1 -%}
+{%- endif -%}
+
+{#- Set tools to none if not defined -#}
+{%- set tools = tools | default(none) -%}
+
+{#- Validate message alternation (user/assistant pattern) -#}
+{%- set ns = namespace(last_role='assistant') -%}
+{%- for message in messages[start_index:] -%}
+
+    {%- set role = message['role'] -%}
+    {%- if message['role'] in ['user', 'tool'] -%}
+        {%- set role = 'user' -%}
+    {%- elif message['role'] == 'assistant' or 'tool_calls' in message -%}
+        {%- set role = 'assistant' -%}
+    {%- endif -%}
+
+    {%- if role == ns.last_role -%}
+        {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
+    {%- endif -%}
+    {%- set ns.last_role = role -%}
+{%- endfor -%}
+
+{#- Process each message -#}
+{%- for message in messages[start_index:] -%}
+    {#- Map roles to Gemma format -#}
+    {%- if message['role'] == 'assistant' -%}
+        {%- set role = 'model' -%}
+    {%- elif message['role'] == 'tool' -%}
+        {%- set role = 'user' -%}
+    {%- else -%}
+        {%- set role = message['role'] -%}
+    {%- endif -%}
+
+    {#- Start message turn -#}
+    {{ '<start_of_turn>' + role + '\n' -}}
+
+    {#- Include system message and tool definitions for first user message -#}
+    {%- if loop.first and role == 'user' -%}
+        {{ system_message }}
+        {%- if tools is not none -%}
+            {{ "You have access to functions. If you decide to invoke any of the function(s), you MUST put it in the format of\n" -}}
+            {{ '{"name": function name, "parameters": dictionary of argument name and its value}\n\n' -}}
+            {{ "You SHOULD NOT include any other text in the response if you call a function.\n" -}}
+            {{ "If none of the functions can be used, point it out. If you lack the parameters required by the function, also point it out.\n" -}}
+            {{ "Here is a list of functions available:\n" -}}
+            {{ tools | tojson(indent=2) }}
+            {{ "\n\n" -}}
+        {%- endif -%}
+    {%- endif -%}
+
+    {#- Handle tool calls from assistant - format as JSON -#}
+    {%- if 'tool_calls' in message -%}
+        {%- for tool_call in message.tool_calls -%}
+            {%- set func = tool_call.function if tool_call.function is defined else tool_call -%}
+            {%- set call_json = {"name": func.name, "parameters": func.arguments} -%}
+            {{ call_json | tojson }}
+            {%- if not loop.last -%}{{ '\n' }}{%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+
+    {#- Handle tool response wrapper -#}
+    {%- if message['role'] == 'tool' -%}
+        {{ '<tool_response>\n' -}}
+    {%- endif -%}
+
+    {#- Render message content -#}
+    {%- if message['content'] is string -%}
+        {{ message['content'] | trim }}
+    {%- elif message['content'] is iterable -%}
+        {%- for item in message['content'] -%}
+            {%- if item['type'] == 'image' -%}
+                {{ '<start_of_image>' }}
+            {%- elif item['type'] == 'text' -%}
+                {{ item['text'] | trim }}
+            {%- else -%}
+                {{ raise_exception("Unknown content type: " + item['type']) }}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+
+    {#- Close tool response wrapper -#}
+    {%- if message['role'] == 'tool' -%}
+        {{ '\n</tool_response>' -}}
+    {%- endif -%}
+
+    {#- End message turn -#}
+    {{ '<end_of_turn>\n' -}}
+{%- endfor -%}
+
+{#- Add generation prompt if requested -#}
+{%- if add_generation_prompt -%}
+    {{ '<start_of_turn>model\n' }}
+{%- endif -%}
