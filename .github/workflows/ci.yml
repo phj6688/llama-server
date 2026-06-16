@@ -1,0 +1,157 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+
+# One run per ref; new pushes cancel superseded runs.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run shellcheck on all *.sh
+        run: |
+          mapfile -t files < <(git ls-files '*.sh')
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No *.sh files; skipping shellcheck (gate stays green)."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          printf '%s\n' "${files[@]}"
+          shellcheck "${files[@]}"
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lint workflow files
+        run: |
+          if [ -d .github/workflows ] && ls .github/workflows/*.y*ml >/dev/null 2>&1; then
+            docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:latest -color
+          else
+            echo "No workflow files to lint."
+          fi
+
+  docker:
+    name: Docker (hadolint & compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Lint Dockerfile (hadolint)
+        run: |
+          mapfile -t dockerfiles < <(git ls-files 'Dockerfile' '*/Dockerfile' '*.dockerfile')
+          if [ ${#dockerfiles[@]} -eq 0 ]; then
+            echo "No Dockerfile; skipping hadolint."
+            exit 0
+          fi
+          # Fail on errors only; warnings (e.g. DL3008 pin-apt-versions against
+          # an upstream base image) are reported but do not block the gate.
+          for df in "${dockerfiles[@]}"; do
+            echo "hadolint $df"
+            docker run --rm -i hadolint/hadolint:latest \
+              hadolint --failure-threshold error - < "$df"
+          done
+      - name: Validate docker-compose
+        run: |
+          mapfile -t composes < <(git ls-files 'docker-compose*.yml' 'docker-compose*.yaml' 'compose*.yml' 'compose*.yaml')
+          if [ ${#composes[@]} -eq 0 ]; then
+            echo "No compose file; skipping compose validation."
+            exit 0
+          fi
+          # External networks referenced by the compose file are absent in CI.
+          docker network create platform-net >/dev/null 2>&1 || true
+          for c in "${composes[@]}"; do
+            echo "docker compose -f $c config"
+            # LLAMA_MODEL_PATH is required at runtime; supply a placeholder so
+            # variable interpolation resolves and config validation can run.
+            LLAMA_MODEL_PATH=/models/placeholder.gguf \
+              docker compose -f "$c" config --quiet
+          done
+
+  validate:
+    name: Validate (yaml, json & templates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install tooling
+        run: python -m pip install --quiet pyyaml jinja2
+      - name: YAML & JSON syntax
+        run: |
+          python - <<'PY'
+          import sys, glob, json, yaml
+          bad = 0
+          for f in glob.glob('**/*.yml', recursive=True) + glob.glob('**/*.yaml', recursive=True):
+              try:
+                  list(yaml.safe_load_all(open(f, encoding='utf-8')))
+              except Exception as e:
+                  print(f"::error file={f}::invalid YAML: {e}")
+                  bad += 1
+          for f in glob.glob('**/*.json', recursive=True):
+              try:
+                  json.load(open(f, encoding='utf-8'))
+              except Exception as e:
+                  print(f"::error file={f}::invalid JSON: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Jinja templates parse
+        run: |
+          python - <<'PY'
+          import sys, glob
+          from jinja2 import Environment
+          env = Environment()
+          bad = 0
+          for f in glob.glob('**/*.jinja', recursive=True) + glob.glob('**/*.j2', recursive=True):
+              try:
+                  env.parse(open(f, encoding='utf-8').read())
+              except Exception as e:
+                  print(f"::error file={f}::invalid Jinja: {e}")
+                  bad += 1
+          sys.exit(1 if bad else 0)
+          PY
+      - name: Markdown present & non-empty
+        run: |
+          mapfile -t md < <(git ls-files '*.md')
+          for f in "${md[@]}"; do
+            if [ ! -s "$f" ]; then echo "::error::empty markdown: $f"; exit 1; fi
+          done
+          echo "Checked ${#md[@]} markdown file(s)."
+
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [shellcheck, actionlint, docker, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: |
+          echo "::error::A required CI job did not succeed."
+          echo "Results: ${{ join(needs.*.result, ' ') }}"
+          exit 1
+      - name: All gates green
+        run: echo "All CI jobs passed."
