@@ -1,3 +1,5 @@
+name: llama-server
+
 networks:
   platform-net:
     external: true
