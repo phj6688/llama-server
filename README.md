@@ -62,9 +62,9 @@ visible text instead of a lost turn. Tool-call extraction is off while this is
 on. Set it to `false` when a model that emits well-formed calls is resident.
 
 `./verify.sh` covers both failure shapes, repeats each one, and exits
-INCONCLUSIVE (2) when no round produced a fenced reply, because a run that
-never triggered the crash path proves nothing. Run it from a container that
-has `bash`, `curl` and `grep` on `platform-net`:
+INCONCLUSIVE (2) unless BOTH modes produced a fenced reply, because a mode
+that never triggered its own crash path proves nothing. The script is POSIX
+sh, so a busybox image is enough. Run it from a container on `platform-net`:
 
 ```bash
 cd ~/deploy/llama-server
