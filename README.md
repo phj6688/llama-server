@@ -40,6 +40,8 @@ All config via environment variables in `.env`:
 | `LLAMA_CPP_TAG` | `server-rocm-b9070` | Upstream image tag |
 | `LLAMA_CHAT_TEMPLATE_FILE` | (empty) | Jinja template; enables `--jinja` |
 | `LLAMA_SKIP_CHAT_PARSING` | `true` | Keep model output in `content` (see below) |
+| `LLAMA_HEALTH_TIMEOUT` | `25` | Seconds the healthcheck waits for one token |
+| `LLAMA_HEALTH_MAX_FAILS` | `4` | Consecutive stalls before the server restarts |
 
 ## Chat parsing
 
@@ -70,6 +72,19 @@ docker run --rm --network platform-net -v "$PWD:/w" -w /w alpine/curl:latest sh 
 ```
 
 Set `LLAMA_SKIP_CHAT_PARSING=false` and redeploy to see the gate go red.
+
+## Healthcheck
+
+The probe asks the model for one token rather than calling `/health`. The HTTP
+thread answers `/health` even when the model cannot decode, so the old probe
+reported a healthy container straight through a total inference stall; that
+happened twice on 2026-08-17 and nothing restarted, because docker restarts a
+container for exiting, never for going unhealthy.
+
+After `LLAMA_HEALTH_MAX_FAILS` consecutive stalls the probe signals PID 1, so
+the compose restart policy reloads the model. Any success resets the counter,
+so one slow reply is never enough. The container is marked unhealthy at 3
+retries, one round before it restarts itself.
 
 ## Boot guard
 
