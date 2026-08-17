@@ -38,6 +38,29 @@ All config via environment variables in `.env`:
 | `LLAMA_MAX_SWAP_GB` | `10` | Boot guard: max swap used |
 | `HSA_OVERRIDE_GFX_VERSION` | `11.0.0` | ROCm ISA override |
 | `LLAMA_CPP_TAG` | `server-rocm-b9070` | Upstream image tag |
+| `LLAMA_CHAT_TEMPLATE_FILE` | (empty) | Jinja template; enables `--jinja` |
+| `LLAMA_SKIP_CHAT_PARSING` | `true` | Keep model output in `content` (see below) |
+
+## Chat parsing
+
+With a Jinja template loaded, llama.cpp builds a strict PEG parser and throws
+when the model writes anything the grammar cannot place. Gemma models wrap a
+tool call in a ```` ```tool_code ```` or ```` ```json ```` fence often enough
+that this is routine, and the throw costs the client the whole turn:
+
+- non-streamed: `HTTP 500 {"error":{"message":"Failed to parse input at pos N: ```"}}`
+- streamed: `HTTP 200`, then an error frame and no `[DONE]`
+
+Upstream llama.cpp issue 20650 is open, its fix PR 20708 was rejected, and the
+workaround PR 20729 is unmerged, so the parser stays strict.
+
+`LLAMA_SKIP_CHAT_PARSING=true` (the default) passes `--skip-chat-parsing`, so
+everything the model wrote stays in `content`. A malformed call degrades to
+visible text instead of a lost turn. Tool-call extraction is off while this is
+on. Set it to `false` when a model that emits well-formed calls is resident.
+
+`./verify.sh` covers both failure shapes. Run it from a container on
+`platform-net` after any change here.
 
 ## Boot guard
 
