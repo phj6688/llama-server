@@ -1,23 +1,29 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Verify the running llama-server end to end.
+#
+# POSIX sh on purpose: this runs from a throwaway container next to the
+# server, and the obvious ones (alpine/curl) ship busybox without bash.
 #
 # The tool-call section is the regression gate for the crash class described
 # in entrypoint.sh: with strict chat parsing, llama.cpp throws on a fenced
-# tool call, which surfaces as HTTP 500 "Failed to parse input at pos N" on a
-# plain request and as an error frame with no [DONE] on a streamed one. The
-# client loses the whole turn either way.
+# tool call. The two request modes fail differently, so each is checked and
+# each must prove itself:
+#   plain    -> HTTP 500 "Failed to parse input at pos N"
+#   streamed -> HTTP 200, then an error frame and no [DONE]
+# The client loses the whole turn either way.
 #
 # The gate only means something when the trigger actually fires, and the
-# resident model fences its call only some of the time. So each shape repeats,
-# and a run where no round produced a fence exits INCONCLUSIVE (2) rather than
-# claiming a pass it did not earn.
+# resident model fences its call only some of the time. So each mode repeats,
+# and each mode must produce at least one fenced reply of its own. A fence
+# seen only while streaming says nothing about the plain HTTP 500 path, so a
+# shared counter would let one mode vouch for the other.
 #
 # Expected results by mode:
 #   LLAMA_SKIP_CHAT_PARSING=true   -> PASS
 #   LLAMA_SKIP_CHAT_PARSING=false  -> FAIL (this is how the gate is shown red)
 #
 # Exit: 0 PASS, 1 FAIL, 2 INCONCLUSIVE.
-set -euo pipefail
+set -eu
 
 URL="${LLAMA_URL:-http://llama-server:8000}"
 MODEL="${LLAMA_MODEL_ALIAS:-medgemma-4b}"
@@ -67,38 +73,48 @@ else
   fail "plain completion returned $plain"
 fi
 
-fenced=0
-tool_calls_seen=0
+plain_fenced=0
+stream_fenced=0
+plain_tool_calls=0
+stream_tool_calls=0
 
 note
 note "== tool call, plain ($ROUNDS rounds) =="
-for i in $(seq 1 "$ROUNDS"); do
-  body=$(curl -s -m 180 -w '\n%{http_code}' -X POST "$URL/v1/chat/completions" \
-    -H 'Content-Type: application/json' -d "$(tool_body false)") || body=$'\n000'
-  code=${body##*$'\n'}
-  payload=${body%$'\n'*}
+i=1
+while [ "$i" -le "$ROUNDS" ]; do
+  body=$(curl -s -m 180 -w '
+%{http_code}' -X POST "$URL/v1/chat/completions" \
+    -H 'Content-Type: application/json' -d "$(tool_body false)") || body='
+000'
+  code=$(printf '%s' "$body" | tail -n 1)
+  payload=$(printf '%s' "$body" | sed '$d')
   marks=""
   if printf '%s' "$payload" | grep -q '```'; then
-    fenced=$((fenced + 1)); marks="$marks fenced"
+    plain_fenced=$((plain_fenced + 1)); marks="$marks fenced"
   fi
   if printf '%s' "$payload" | grep -q '"tool_calls"'; then
-    tool_calls_seen=$((tool_calls_seen + 1)); marks="$marks tool_calls"
+    plain_tool_calls=$((plain_tool_calls + 1)); marks="$marks tool_calls"
   fi
   if [ "$code" = "200" ]; then
     note "round $i: 200$marks"
   else
     fail "round $i returned $code -- strict chat parsing is on, or the server is down"
   fi
+  i=$((i + 1))
 done
 
 note
 note "== tool call, streamed ($ROUNDS rounds) =="
-for i in $(seq 1 "$ROUNDS"); do
+i=1
+while [ "$i" -le "$ROUNDS" ]; do
   stream=$(curl -s -m 180 -X POST "$URL/v1/chat/completions" \
     -H 'Content-Type: application/json' -d "$(tool_body true)") || stream=""
   marks=""
   if printf '%s' "$stream" | grep -q '```'; then
-    fenced=$((fenced + 1)); marks="$marks fenced"
+    stream_fenced=$((stream_fenced + 1)); marks="$marks fenced"
+  fi
+  if printf '%s' "$stream" | grep -q '"tool_calls"'; then
+    stream_tool_calls=$((stream_tool_calls + 1)); marks="$marks tool_calls"
   fi
   if printf '%s' "$stream" | grep -q '\[DONE\]'; then
     note "round $i: terminated$marks"
@@ -109,6 +125,7 @@ for i in $(seq 1 "$ROUNDS"); do
   if printf '%s' "$stream" | grep -q 'data: *{"error"'; then
     fail "stream round $i carried an error frame"
   fi
+  i=$((i + 1))
 done
 
 note
@@ -121,21 +138,22 @@ if [ "$failures" -ne 0 ]; then
   exit 1
 fi
 
-# A green run proves nothing unless the model actually produced the output
-# shape that breaks the strict parser at least once.
-if [ "$fenced" -eq 0 ]; then
-  note "INCONCLUSIVE: no round produced a fenced reply in $((ROUNDS * 2)) tries,"
-  note "so the crash path was never exercised. Re-run, or raise VERIFY_ROUNDS."
+# Each mode must have exercised its own crash path, or its green result is
+# only evidence that the model happened not to fence this time.
+if [ "$plain_fenced" -eq 0 ] || [ "$stream_fenced" -eq 0 ]; then
+  note "INCONCLUSIVE: fenced replies plain=$plain_fenced streamed=$stream_fenced"
+  note "in $ROUNDS rounds each. A mode with zero never exercised its crash"
+  note "path, so its pass proves nothing. Re-run, or raise VERIFY_ROUNDS."
   exit 2
 fi
-note "ok: $fenced of $((ROUNDS * 2)) rounds produced a fenced reply"
+note "ok: fenced replies plain=$plain_fenced streamed=$stream_fenced"
 
-# With parsing skipped, llama.cpp must not extract tool calls at all. Seeing
-# any means the flag is not in effect and the strict parser is still armed.
-if [ "$tool_calls_seen" -ne 0 ]; then
-  fail "$tool_calls_seen rounds returned tool_calls, so --skip-chat-parsing is not in effect"
+# With parsing skipped, llama.cpp must not extract tool calls in either mode.
+# Seeing any means the flag is not in effect and the strict parser is armed.
+if [ "$plain_tool_calls" -ne 0 ] || [ "$stream_tool_calls" -ne 0 ]; then
+  fail "tool_calls returned (plain=$plain_tool_calls streamed=$stream_tool_calls), so --skip-chat-parsing is not in effect"
 else
-  note "ok: no round returned tool_calls, --skip-chat-parsing is in effect"
+  note "ok: no round returned tool_calls in either mode"
 fi
 
 note
