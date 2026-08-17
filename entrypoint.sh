@@ -75,11 +75,26 @@ fi
 # on the cloud route until a local harness passes.
 #
 # Set LLAMA_SKIP_CHAT_PARSING=false to get strict parsing back once a model
-# that emits well-formed calls is resident.
-if [[ "$SKIP_CHAT_PARSING" == "true" ]]; then
-  EXTRA_ARGS+=(--skip-chat-parsing)
-  echo "chat parsing skipped: malformed tool calls degrade to content, not HTTP 500"
-fi
+# that emits well-formed calls is resident. An unreadable value is fatal
+# rather than a silent fall-through, because falling through re-arms a
+# user-visible outage and the boot log would not say so.
+case "${SKIP_CHAT_PARSING,,}" in
+  1|true|yes|on)
+    EXTRA_ARGS+=(--skip-chat-parsing)
+    echo "chat parsing: skipped, malformed tool calls degrade to content"
+    ;;
+  0|false|no|off)
+    # Pass the negative form so this script owns the setting either way.
+    # llama.cpp also reads LLAMA_ARG_SKIP_CHAT_PARSING from the environment,
+    # and a command-line flag wins over it.
+    EXTRA_ARGS+=(--no-skip-chat-parsing)
+    echo "chat parsing: strict, a malformed tool call will fail the request"
+    ;;
+  *)
+    echo "FATAL: LLAMA_SKIP_CHAT_PARSING must be true or false, got '${SKIP_CHAT_PARSING}'" >&2
+    exit 78
+    ;;
+esac
 
 exec /app/llama-server \
   -m "$MODEL_PATH" \

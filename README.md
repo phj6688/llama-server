@@ -17,7 +17,7 @@ OpenAI-compatible at `http://llama-server:8000/v1` (from any container on `platf
 ```bash
 curl http://llama-server:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"medgemma-27b","messages":[{"role":"user","content":"hello"}]}'
+  -d '{"model":"medgemma-4b","messages":[{"role":"user","content":"hello"}]}'
 ```
 
 ## Configuration
@@ -59,8 +59,17 @@ everything the model wrote stays in `content`. A malformed call degrades to
 visible text instead of a lost turn. Tool-call extraction is off while this is
 on. Set it to `false` when a model that emits well-formed calls is resident.
 
-`./verify.sh` covers both failure shapes. Run it from a container on
-`platform-net` after any change here.
+`./verify.sh` covers both failure shapes, repeats each one, and exits
+INCONCLUSIVE (2) when no round produced a fenced reply, because a run that
+never triggered the crash path proves nothing. Run it from a container that
+has `bash`, `curl` and `grep` on `platform-net`:
+
+```bash
+cd ~/deploy/llama-server
+docker run --rm --network platform-net -v "$PWD:/w" -w /w alpine/curl:latest sh verify.sh
+```
+
+Set `LLAMA_SKIP_CHAT_PARSING=false` and redeploy to see the gate go red.
 
 ## Boot guard
 
@@ -80,7 +89,7 @@ until the pages decompressed. A transient spike became a lasting outage.
 ## Consumers
 
 Any service on `platform-net` can reach `http://llama-server:8000/v1`. Current consumers:
-- `medchat` (OpenWebUI → llama-server for local inference)
+- `medchat` (LibreChat at chat.peyman.io, endpoint "MedGemma (local)")
 
 ## Model swap
 
