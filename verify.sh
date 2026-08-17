@@ -113,6 +113,14 @@ done
 
 note
 note "== assertions =="
+# Real failures outrank an inconclusive verdict. A server that is simply down
+# produces no fenced reply either, and reporting that as "re-run with more
+# rounds" would send the reader looking in the wrong place.
+if [ "$failures" -ne 0 ]; then
+  note "verify.sh: FAIL ($failures)"
+  exit 1
+fi
+
 # A green run proves nothing unless the model actually produced the output
 # shape that breaks the strict parser at least once.
 if [ "$fenced" -eq 0 ]; then
