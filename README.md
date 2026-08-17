@@ -66,9 +66,16 @@ on. Set it to `false` when a model that emits well-formed calls is resident.
 
 The entrypoint refuses to start if:
 - Available RAM < `LLAMA_MIN_FREE_GB`
-- Swap usage >= `LLAMA_MAX_SWAP_GB`
+- Disk-backed swap used >= `LLAMA_MAX_SWAP_GB`
 
 This protects sibling containers from OOM pressure during model load.
+
+The swap reading counts only disk-backed devices from `/proc/swaps`. zram is
+excluded on purpose: its pages are compressed RAM, so the available-RAM check
+already covers them. Counting zram made the guard latch. On 2026-08-17 one
+26B model load pushed the combined figure past the ceiling, the figure never
+fell back, and the guard then refused every boot of the resident 4B model
+until the pages decompressed. A transient spike became a lasting outage.
 
 ## Consumers
 

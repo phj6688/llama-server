@@ -8,8 +8,19 @@ read_mem() {
   free -g | awk -v field="$1" -v row="$2" 'NR==row { print $field }'
 }
 
+# Disk-backed swap only. This host runs a 16 GiB zram device, and zram pages
+# live in RAM, so `free` counts them as swap while they are really compressed
+# memory that the available-RAM reading below already accounts for. Counting
+# zram made the guard latch: one pressure spike pushed the total past the
+# ceiling, the total never came back down, and the server then refused every
+# boot for as long as the pages stayed compressed. That turned a transient
+# spike into a permanent outage of the resident model on 2026-08-17.
+disk_swap_used_gb() {
+  awk 'NR > 1 && $1 !~ /zram/ { used += $4 } END { printf "%d", used / 1048576 }' /proc/swaps
+}
+
 free_gb=$(read_mem 7 2)
-swap_used_gb=$(read_mem 3 3)
+swap_used_gb=$(disk_swap_used_gb)
 
 : "${free_gb:=0}"
 : "${swap_used_gb:=0}"
@@ -20,7 +31,7 @@ if (( free_gb < MIN_FREE_GB )); then
 fi
 
 if (( swap_used_gb >= MAX_SWAP_GB )); then
-  echo "FATAL: swap usage ${swap_used_gb}G at or above LLAMA_MAX_SWAP_GB=${MAX_SWAP_GB}G" >&2
+  echo "FATAL: disk swap usage ${swap_used_gb}G at or above LLAMA_MAX_SWAP_GB=${MAX_SWAP_GB}G" >&2
   exit 78
 fi
 
@@ -40,7 +51,7 @@ if [[ ! -f "$MODEL_PATH" ]]; then
   exit 78
 fi
 
-echo "boot guard ok: free=${free_gb}G swap_used=${swap_used_gb}G; loading $MODEL_PATH ctx=$CTX kv=$KV_K/$KV_V"
+echo "boot guard ok: free=${free_gb}G disk_swap=${swap_used_gb}G; loading $MODEL_PATH ctx=$CTX kv=$KV_K/$KV_V"
 
 EXTRA_ARGS=()
 if [[ -n "$CHAT_TEMPLATE_FILE" && -f "$CHAT_TEMPLATE_FILE" ]]; then
