@@ -53,12 +53,19 @@ fi
 
 echo "boot guard ok: free=${free_gb}G disk_swap=${swap_used_gb}G; loading $MODEL_PATH ctx=$CTX kv=$KV_K/$KV_V"
 
-EXTRA_ARGS=()
-if [[ -n "$CHAT_TEMPLATE_FILE" && -f "$CHAT_TEMPLATE_FILE" ]]; then
-  EXTRA_ARGS+=(--jinja --chat-template-file "$CHAT_TEMPLATE_FILE")
-  echo "tool calling enabled via $CHAT_TEMPLATE_FILE"
-fi
-
+# Tool calling needs both halves: the Jinja template that renders the function
+# list into the prompt, and the parser that lifts the model's reply back into
+# tool_calls. Arming one without the other has one guaranteed outcome. The
+# template orders the model to answer with {"name": ..., "parameters": ...},
+# nothing downstream converts that text, so it stays in the content field and
+# the user reads a raw JSON blob where the answer belongs. Measured on the
+# resident model: 6 of 6 tool-bearing requests, plain and streamed alike. That
+# is what reached chat.peyman.io as a visible tool call.
+#
+# So parsing decides first, and the template is armed only when the parser is
+# there to meet it. The two settings are one decision, not two independent
+# ones, and the broken combination is now unreachable.
+#
 # llama.cpp derives a strict PEG parser from the Jinja template and throws
 # when the model writes anything the grammar cannot place, such as the
 # ```tool_code and ```json fences Gemma models like to wrap a call in. The
@@ -68,20 +75,28 @@ fi
 # issue 20650 is open, its fix PR 20708 was rejected, and the workaround
 # PR 20729 is unmerged, so the parser stays strict for now.
 #
-# --skip-chat-parsing keeps everything the model wrote in the content field.
-# A malformed call degrades to visible text rather than a lost turn. It also
-# turns off tool-call extraction, which costs nothing here: the resident
-# model is MedGemma-4B, and ADR 0002 in the medchat repo keeps tool calling
-# on the cloud route until a local harness passes.
+# --skip-chat-parsing keeps everything the model wrote in the content field,
+# and turns off tool-call extraction with it. That is why the template stays
+# down in this mode. It costs nothing here: the resident model is MedGemma-4B,
+# and ADR 0002 in the medchat repo keeps tool calling on the cloud route until
+# a local harness passes. A tools array from the client is then ignored by the
+# built-in template, and the model answers in prose.
 #
-# Set LLAMA_SKIP_CHAT_PARSING=false to get strict parsing back once a model
-# that emits well-formed calls is resident. An unreadable value is fatal
-# rather than a silent fall-through, because falling through re-arms a
-# user-visible outage and the boot log would not say so.
+# Set LLAMA_SKIP_CHAT_PARSING=false to arm the template and get strict parsing
+# back once a model that emits well-formed calls is resident. An unreadable
+# value is fatal rather than a silent fall-through, because falling through
+# re-arms a user-visible outage and the boot log would not say so.
+EXTRA_ARGS=()
 case "${SKIP_CHAT_PARSING,,}" in
   1|true|yes|on)
     EXTRA_ARGS+=(--skip-chat-parsing)
-    echo "chat parsing: skipped, malformed tool calls degrade to content"
+    echo "chat parsing: skipped, tool calling off"
+    if [[ -n "$CHAT_TEMPLATE_FILE" ]]; then
+      echo "tool template not loaded: $CHAT_TEMPLATE_FILE"
+      echo "  reason: tool-call extraction is off, so the template could only" \
+           "leak a raw tool call into the reply. Set" \
+           "LLAMA_SKIP_CHAT_PARSING=false to arm it."
+    fi
     ;;
   0|false|no|off)
     # Pass the negative form so this script owns the setting either way.
@@ -89,6 +104,10 @@ case "${SKIP_CHAT_PARSING,,}" in
     # and a command-line flag wins over it.
     EXTRA_ARGS+=(--no-skip-chat-parsing)
     echo "chat parsing: strict, a malformed tool call will fail the request"
+    if [[ -n "$CHAT_TEMPLATE_FILE" && -f "$CHAT_TEMPLATE_FILE" ]]; then
+      EXTRA_ARGS+=(--jinja --chat-template-file "$CHAT_TEMPLATE_FILE")
+      echo "tool calling enabled via $CHAT_TEMPLATE_FILE"
+    fi
     ;;
   *)
     echo "FATAL: LLAMA_SKIP_CHAT_PARSING must be true or false, got '${SKIP_CHAT_PARSING}'" >&2
