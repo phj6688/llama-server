@@ -42,11 +42,16 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; failures=$((failures + 1)); }
 # Rebuild the assistant text from a response body. A streamed reply arrives one
 # token per frame, so the tool-call shape never appears contiguously in the raw
 # body and a plain grep over it reports clean. Cutting each frame down to its
-# content value and joining them puts the text back together. A content value
-# always ends at the literal "}}] that closes the choices array, and a quote
-# inside the value is escaped, so that sequence can only be the terminator.
+# content value and joining them puts the text back together.
+#
+# The value ends at the first quote that is not escaped. Cutting on the frame's
+# trailing punctuation instead would tie this to the key order llama.cpp emits
+# today, and would truncate early on any reply that contains that punctuation.
 assistant_text() {
-  printf '%s\n' "$1" | sed -n 's/.*"content":"//p' | sed 's/"}}\].*//' | tr -d '\n'
+  printf '%s\n' "$1" |
+    sed -n 's/.*"content":"//p' |
+    sed 's/\(\([^"\\]\|\\.\)*\)".*/\1/' |
+    tr -d '\n'
 }
 
 # A working tool_calls reply carries the schema's own property names and never
