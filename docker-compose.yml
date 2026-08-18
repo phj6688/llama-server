@@ -33,15 +33,19 @@ services:
       LLAMA_MIN_FREE_GB: ${LLAMA_MIN_FREE_GB:-4}
       LLAMA_MAX_SWAP_GB: ${LLAMA_MAX_SWAP_GB:-10}
       LLAMA_CHAT_TEMPLATE_FILE: ${LLAMA_CHAT_TEMPLATE_FILE:-}
+      LLAMA_SKIP_CHAT_PARSING: ${LLAMA_SKIP_CHAT_PARSING:-true}
       HSA_OVERRIDE_GFX_VERSION: ${HSA_OVERRIDE_GFX_VERSION:-11.0.0}
     volumes:
       - ${LLAMA_MODELS_DIR:-./models}:/models:ro
     networks:
       - platform-net
+    # Exercises inference, not /health: the HTTP thread answers /health fine
+    # while the model cannot decode a token, so the old probe reported healthy
+    # straight through a stall. See healthcheck.sh.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "/app/healthcheck.sh"]
       interval: 30s
-      timeout: 5s
+      timeout: 30s
       retries: 3
       start_period: 180s
     logging:

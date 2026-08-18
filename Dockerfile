@@ -16,16 +16,19 @@ RUN getent group render >/dev/null || groupadd -g 110 render \
  && usermod -aG render,video ubuntu
 
 COPY entrypoint.sh /app/entrypoint.sh
+COPY healthcheck.sh /app/healthcheck.sh
 COPY templates/ /app/templates/
-RUN chmod +x /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/healthcheck.sh
 
 USER ubuntu
 WORKDIR /app
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1
+# Timeout must exceed the script's own curl deadline (LLAMA_HEALTH_TIMEOUT,
+# 25s by default) or docker kills the probe before it can decide.
+HEALTHCHECK --interval=30s --timeout=30s --start-period=180s --retries=3 \
+  CMD /app/healthcheck.sh
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["/app/entrypoint.sh"]
